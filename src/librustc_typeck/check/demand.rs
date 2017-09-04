@@ -127,6 +127,10 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                                                      checked_ty,
                                                      expected) {
                 err.help(&suggestion);
+            } else if let Some(suggestion) = self.check_string_literal(expr,
+                                                                       checked_ty,
+                                                                       expected) {
+                err.help(&suggestion);
             } else {
                 let mode = probe::Mode::MethodCall;
                 let suggestions = self.probe_for_return_type(syntax_pos::DUMMY_SP,
@@ -239,6 +243,53 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                 }
                 None
             }
+            _ => None,
+        }
+    }
+
+    fn check_string_literal(&self,
+                            expr: &hir::Expr,
+                            checked_ty: Ty<'tcx>,
+                            expected: Ty<'tcx>)
+                            -> Option<String> {
+        use ast::{LitKind, UintTy};
+        match (&expected.sty, &checked_ty.sty) {
+            (&ty::TyRef(_, expected_raw), &ty::TyRef(_, checked_raw)) => {
+                // Only suggest for literals.
+                if let hir::ExprLit(ref lit) = expr.node {
+                    match lit.node {
+                        LitKind::Str(..) | LitKind::ByteStr(..) => {},
+                        _ => return None,
+                    }
+                } else {
+                    return None;
+                }
+                if expected_raw.mutbl == hir::Mutability::MutMutable ||
+                   checked_raw.mutbl == hir::Mutability::MutMutable {
+                    return None;
+                }
+                match (&expected_raw.ty.sty, &checked_raw.ty.sty) {
+                    (&ty::TyStr, &ty::TyArray(ty, _)) if ty.sty == ty::TyUint(UintTy::U8) => {
+                        // &[u8; _] to &str
+                        let sp = self.sess().codemap().call_span_if_macro(expr.span);
+                        if let Ok(src) = self.tcx.sess.codemap().span_to_snippet(sp) {
+                            Some(format!("try `{}`", src.trim_matches('b')))
+                        } else {
+                            None
+                        }
+                    },
+                    (&ty::TyArray(ty, _), &ty::TyStr) if ty.sty == ty::TyUint(UintTy::U8) => {
+                        // &str to &[u8]
+                        let sp = self.sess().codemap().call_span_if_macro(expr.span);
+                        if let Ok(src) = self.tcx.sess.codemap().span_to_snippet(sp) {
+                            Some(format!("try `b{}`", &src))
+                        } else {
+                            None
+                        }
+                    },
+                    _ => None
+                }
+            },
             _ => None,
         }
     }
